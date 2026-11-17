@@ -83,9 +83,9 @@ export class FlowError extends Error {
 
 const MESSAGES = {
   offline: { text: 'インターネットにつながっていません。電波のある所でもう一度お試しください。', action: 'retry' },
-  nokey: { text: 'はじめに設定が必要です。右上の歯車から OpenAI のキーを入れてください。', action: 'settings' },
-  key: { text: 'キーが正しくないようです。設定画面で確かめてください。', action: 'settings' },
-  quota: { text: 'OpenAI の利用の上限に当たりました。残高（クレジット）が残っているか確かめるか、少し待ってからお試しください。', action: 'back' },
+  nokey: { text: 'はじめに設定が必要です。右上の歯車から、金庫番の住所と合言葉を入れてください。', action: 'settings' },
+  key: { text: '合言葉が違うか、金庫番のキーが使えないようです。設定画面で「つながるか確かめる」を押してください。', action: 'settings' },
+  quota: { text: '今日使える回数の上限か、OpenAI の利用の上限に当たりました。明日また使うか、持ち主に知らせてください。', action: 'back' },
   parse: { text: 'うまく作れませんでした。もう一度お試しください。', action: 'retry' },
   timeout: { text: '時間がかかりすぎました。もう一度お試しください。', action: 'retry' },
   empty: { text: '見つかりませんでした。行き先の名前を変えて試してください（例：大阪城 → 大阪城公園）。', action: 'back' },
@@ -118,7 +118,7 @@ export async function generateTrip({ destination, course, startTime, mode = 'cla
   const now = deps.now || Date.now;
   const sleep = deps.sleep;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new FlowError('offline');
-  if (!settings || !settings.apiKey) throw new FlowError('nokey');
+  if (!settings || !settings.relayUrl || !settings.passcode) throw new FlowError('nokey');
   const courseCount = (COURSES[course] && COURSES[course].count) || 0;
   if (!courseCount) throw new FlowError('other');
   // テストで差し替えた時だけ専用の待ち行列。本番はアプリ全体で 1 本（規約：1 秒 1 回）
@@ -146,7 +146,8 @@ export async function generateTrip({ destination, course, startTime, mode = 'cla
   if (pool.length < courseCount) notes.push(`この範囲で見つかった場所は${pool.length}か所でした。`);
   const destName = String(destination ?? '').trim() || (cands.dest && cands.dest.title) || '';
 
-  const apiKey = settings.apiKey;
+  const relayUrl = settings.relayUrl;
+  const passcode = settings.passcode;
   let useSearch = false; // OpenAI 版は検索根拠づけを使わん（Gemini 版の立て直しの道を通らんように常に off）
   let useSchema = settings.useSchema !== false;
   const preferred = settings.model || MODEL_PREFERENCE[0];
@@ -166,7 +167,7 @@ export async function generateTrip({ destination, course, startTime, mode = 'cla
   //  ・それでも 429、または 404（一覧にあっても使えんモデル）→ 次の使えるモデルへ 1 回だけ
   async function call(userText) {
     store.bumpUsage(new Date());
-    return generate({ apiKey, model, system, user: userText, useSearch, schema: useSchema ? schema : null, fetchImpl, signal });
+    return generate({ relayUrl, passcode, model, user: userText, schema: useSchema ? schema : null, fetchImpl, signal });
   }
   async function ask(userText) {
     try {
@@ -195,7 +196,8 @@ export async function generateTrip({ destination, course, startTime, mode = 'cla
           e = e2;
         }
       }
-      const unavailable = e.kind === 'quota' || e.status === 404;
+      // 次のモデルへ移るのは、そのモデルが使えん時（404）と混雑（rate_limit）の時だけ。残高不足・1 日の上限・合言葉違いは移っても同じ
+      const unavailable = e.status === 404 || (e.kind === 'quota' && e.code === 'rate_limit_exceeded');
       if (unavailable && modelIndex === 0 && order.length > 1) {
         modelIndex = 1;
         model = order[modelIndex];

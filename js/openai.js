@@ -1,10 +1,9 @@
-// OpenAI API の呼び出しと返事の取り出し（旅ルートくん OpenAI 版・2026-11-17）。
-// Gemini 版（AppKeeper\projects\旅ルートくん）から、呼び出し先だけを OpenAI の Responses API に替えた。
-// キーは Authorization ヘッダで送る（URL に付けない）。ログに出さない。
-// 公式（2026-11-17 確認）：POST /v1/responses・答えの形は text.format（json_schema・strict）・考える量は reasoning.effort。
-// ブラウザから直接呼べる（api.openai.com は Access-Control-Allow-Origin: * を返す＝実測）。
-
-const BASE = 'https://api.openai.com/v1';
+// AI に頼む部品（旅ルートくん OpenAI 版・1.1.0＝金庫番の形・2026-11-17 とと）。
+// アプリは OpenAI に直接頼まん。とと の Apps Script（金庫番・relay/Code.gs）に頼み、金庫番が とと の OpenAI キーで OpenAI に頼む。
+// キーはアプリにもスマホにも入らん。アプリが持つのは「金庫番の住所」と「合言葉」だけ。
+// 指示の文・答えの形・モデルの決め打ち・1 日の回数の上限は金庫番の側（アプリから変えられん）。
+// 送り方：POST・本文は JSON を text/plain で（Apps Script は事前確認（preflight）に答えられんので、単純な頼み方にする）。
+// Apps Script は失敗でも HTTP 200 で返すので、本文の ok／status／code で見分ける。
 
 // 好みの順。gpt-6-luna＝一番安くて速い（入力 0.1 ドル／出力 0.5 ドル・100 万語あたり）。
 // キー確認（models の一覧）で使えると分かったものの中から、この順で選ぶ。
@@ -136,115 +135,65 @@ export function normalizePicks(obj, candidates) {
   return out;
 }
 
-/**
- * Gemini 形式のスキーマ（type 'OBJECT' 等・nullable・propertyOrdering・maxItems が文字）を、
- * OpenAI の strict な JSON Schema に直す：型は小文字・全部の項目を required・additionalProperties:false、
- * 元で必須でない項目と nullable は「null も可」にする。maxItems は落とす（数は normalizePicks の後で切る）。
- */
-export function toStrictSchema(s) {
-  if (!s || typeof s !== 'object') return s;
-  const t = String(s.type || '').toLowerCase();
-  if (t === 'object') {
-    const props = s.properties || {};
-    const req = new Set(s.required || []);
-    const out = { type: 'object', properties: {}, required: Object.keys(props), additionalProperties: false };
-    for (const [k, v] of Object.entries(props)) {
-      const conv = toStrictSchema(v);
-      out.properties[k] = (!req.has(k) || (v && v.nullable)) ? nullable(conv) : conv;
-    }
-    return out;
-  }
-  if (t === 'array') return { type: 'array', items: toStrictSchema(s.items || {}) };
-  const out = { type: t };
-  if (Array.isArray(s.enum)) out.enum = s.enum.slice();
-  if (s.nullable) return nullable(out);
-  return out;
+/** 金庫番の住所の形（Apps Script のウェブアプリ）。 */
+export function isRelayUrl(u) {
+  return /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(String(u || '').trim());
 }
 
-function nullable(conv) {
-  if (!conv || typeof conv !== 'object' || !conv.type) return conv;
-  if (Array.isArray(conv.type)) return conv.type.includes('null') ? conv : { ...conv, type: [...conv.type, 'null'] };
-  const out = { ...conv, type: [conv.type, 'null'] };
-  if (Array.isArray(conv.enum) && !conv.enum.includes(null)) out.enum = [...conv.enum, null];
-  return out;
-}
-
-/** モデルごとの考える量。速さ優先で一番少なく（gpt-6 系は none・gpt-5 系は minimal・それより前は指定なし）。 */
-export function reasoningFor(model) {
-  const m = String(model || '');
-  if (/^gpt-6/.test(m)) return { effort: 'none' };
-  if (/^gpt-5/.test(m)) return { effort: 'minimal' };
-  return null;
-}
-
-/** Responses API の本文。schema があれば strict な JSON 出力。 */
-export function buildRequestBody({ system, user, model, schema = null }) {
-  const body = {
-    model,
-    input: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    max_output_tokens: 8000,
-    store: false, // 会話を OpenAI 側に残さん
-  };
-  const r = reasoningFor(model);
-  if (r) body.reasoning = r;
-  if (schema) body.text = { format: { type: 'json_schema', name: 'picks', schema: toStrictSchema(schema), strict: true } };
-  return body;
-}
-
-function headers(apiKey) {
-  return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
-}
-
-async function errorFrom(res, what) {
-  let head = '';
-  let code = null;
+/** 金庫番に 1 回頼む。ok:true の本文を返す。失敗は AiError（status・code）。 */
+export async function callRelay({ relayUrl, payload, fetchImpl = fetch, signal } = {}) {
+  let res;
   try {
-    head = (await res.text()).slice(0, 300);
-    const j = JSON.parse(head);
-    code = (j && j.error && (j.error.code || j.error.type)) || null;
-  } catch { /* 本文なし・JSON やない */ }
-  // 原因の切り分け用（キーは含まれん）。画面には出さん。
-  console.error(`${what} failed`, res.status, code || '', head);
-  const err = new AiError(`${what} failed: ${res.status}`, res.status, code);
-  err.detail = head;
-  return err;
-}
-
-export async function listModels({ apiKey, fetchImpl = fetch, signal } = {}) {
-  const res = await fetchImpl(`${BASE}/models`, { headers: headers(apiKey), signal });
-  if (!res.ok) throw await errorFrom(res, 'models.list');
-  const data = await res.json();
-  return (data.data || []).map((m) => m.id);
-}
-
-/** 返事（Responses API）から本文を取り出す。output[].content[] の output_text をつなぐ。 */
-export function responseText(data) {
-  if (!data || typeof data !== 'object') return '';
-  if (typeof data.output_text === 'string' && data.output_text) return data.output_text;
-  const out = Array.isArray(data.output) ? data.output : [];
-  let text = '';
-  for (const item of out) {
-    if (!item || item.type !== 'message' || !Array.isArray(item.content)) continue;
-    for (const c of item.content) if (c && c.type === 'output_text' && typeof c.text === 'string') text += c.text;
+    res = await fetchImpl(String(relayUrl).trim(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      signal,
+    });
+  } catch (e) {
+    // 中断と圏外はそのまま（流れの側が「時間切れ」「圏外」と出す）。
+    // それ以外は、住所違い・公開の設定違いでブラウザが通信を止めた形＝金庫番につながらん
+    if ((e && e.name === 'AbortError') || (typeof navigator !== 'undefined' && navigator.onLine === false)) throw e;
+    throw new AiError('relay unreachable', 502, 'relay_unreachable');
   }
-  return text;
+  if (!res.ok) throw new AiError(`relay http ${res.status}`, res.status === 429 ? 429 : 502, 'relay_http');
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    // 住所違い・公開の設定が「全員」になっとらん時は、JSON やなく Google のページが返る
+    throw new AiError('relay not json', 502, 'relay_not_json');
+  }
+  if (!data || data.ok !== true) {
+    const status = Number(data && data.status) || 502;
+    console.error('relay failed', status, (data && data.code) || '');
+    throw new AiError(`relay ${(data && data.code) || 'failed'}`, status, (data && data.code) || null);
+  }
+  return data;
+}
+
+/** つながるか（合言葉・金庫番のキー・使うモデル）を確かめる。料金はかからん・回数にも数えん。 */
+export async function checkRelay({ relayUrl, passcode, fetchImpl = fetch, signal } = {}) {
+  const d = await callRelay({ relayUrl, payload: { action: 'ping', pass: passcode }, fetchImpl, signal });
+  return { model: d.model || null, models: Array.isArray(d.models) ? d.models : [] };
+}
+
+/** pickSchema（Gemini 形式）から、金庫番に渡す候補の番号と数を取り出す。 */
+export function schemaArgs(schema) {
+  const picks = schema && schema.properties && schema.properties.picks;
+  const ids = (picks && picks.items && picks.items.properties && picks.items.properties.id && picks.items.properties.id.enum) || [];
+  const max = Math.max(1, Math.min(10, Number(picks && picks.maxItems) || 1));
+  return { ids: ids.map(String), max };
 }
 
 /**
- * 1 回の生成。返事の text。refs・searchHtml は Gemini 版との互換のため空で返す（OpenAI 版は検索根拠づけを使わん）。
- * useSearch は受け取っても使わん（呼び出し側を Gemini 版と揃えるため引数だけ残す）。
+ * 1 回の生成。返事の text。refs・searchHtml は Gemini 版との互換のため空で返す。
+ * 指示の文（system）は金庫番が持っとるので送らん。schema が無い時（400 の立て直し）は答えの形なしで頼む。
  */
-export async function generate({ apiKey, model, system, user, schema = null, fetchImpl = fetch, signal } = {}) {
-  const res = await fetchImpl(`${BASE}/responses`, {
-    method: 'POST',
-    headers: headers(apiKey),
-    body: JSON.stringify(buildRequestBody({ system, user, model, schema })),
-    signal,
-  });
-  if (!res.ok) throw await errorFrom(res, 'responses');
-  const data = await res.json();
-  return { text: responseText(data), refs: [], searchHtml: null };
+export async function generate({ relayUrl, passcode, model, user, schema = null, fetchImpl = fetch, signal } = {}) {
+  const payload = { action: 'pick', pass: passcode, user, model, schema: Boolean(schema) };
+  if (schema) Object.assign(payload, schemaArgs(schema));
+  const d = await callRelay({ relayUrl, payload, fetchImpl, signal });
+  return { text: typeof d.text === 'string' ? d.text : '', refs: [], searchHtml: null };
 }

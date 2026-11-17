@@ -6,7 +6,7 @@ import * as home from './screens/home.js';
 import * as settings from './screens/settings.js';
 import * as loading from './screens/loading.js';
 
-export const APP_VERSION = '1.0.0（OpenAI版）';
+export const APP_VERSION = '1.1.1（OpenAI版・金庫番）';
 
 const store = createStore();
 export const state = {

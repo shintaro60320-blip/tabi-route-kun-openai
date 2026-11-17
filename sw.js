@@ -1,7 +1,7 @@
 // 旅ルートくんの殻をキャッシュする（設計書 §10.2）。API・地図タイル・写真はキャッシュしない。
 // 版ごとに丸ごと入れ替える：インストール時に殻を全部そろえる（1 つでも取れんかったら新しい版にせん）。
 // 稼働中の版をファイル単位で上書きせん（新旧の混在を防ぐ）。更新は CACHE_NAME を上げて置き直す。
-const CACHE_NAME = 'trko-v1.0.0'; // OpenAI 版は trko-（Gemini 版の trk- と別）
+const CACHE_NAME = 'trko-v1.1.1'; // OpenAI 版は trko-（Gemini 版の trk- と別）
 const SHELL = [
   './',
   './index.html',

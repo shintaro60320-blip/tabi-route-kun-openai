@@ -7,7 +7,8 @@ const MAX_TRIPS = 10;
 const KEEP_DAYS = 30;
 
 const DEFAULT_SETTINGS = Object.freeze({
-  v: 1, apiKey: '', model: '', fontScale: 1, dailyLimit: 100, lastKeyCheckAt: null, useSearch: false,
+  // 金庫番の住所（とと の Apps Script「旅ルート金庫番」・2026-11-17 デプロイ）。秘密やない（合言葉が守り）ので最初から入れておく
+  v: 1, relayUrl: 'https://script.google.com/macros/s/AKfycbyYTEoysaxDM6QOwoSRzb2VYPBsZermUHy_BaKqw3QHGWsKlChJVQjQTZGsxeaE3T0N/exec', passcode: '', model: '', fontScale: 1, dailyLimit: 100, lastKeyCheckAt: null, useSearch: false,
 });
 // models（キー確認で取れた使えるモデルの一覧）は任意の項目。既定には入れん（テストの既定値を変えんため）
 
